@@ -10,7 +10,7 @@
 #define ESPHOME_PRINTER 1
 
 #if ESPHOME_PRINTER == 1
-#include "esphome.h"
+//#include "esphome.h"
 #endif
 
 // Internal character sets used with ESC R n
