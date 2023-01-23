@@ -30,6 +30,7 @@
  */
 
 #include "Adafruit_Thermal.h"
+#include "esphome.h"
 
 // Though most of these printers are factory configured for 19200 baud
 // operation, a few rare specimens instead work at 9600.  If so, change
