@@ -7,6 +7,12 @@
 
 #include "Arduino.h"
 
+#define ESPHOME_PRINTER 1
+
+#if ESPHOME_PRINTER == 1
+#include "esphome.h"
+#endif
+
 // Internal character sets used with ESC R n
 #define CHARSET_USA 0           //!< American character set
 #define CHARSET_FRANCE 1        //!< French character set
@@ -100,7 +106,11 @@ public:
    * @param s Serial stream
    * @param dtr Data Terminal Ready control
    */
+#if ESPHOME_PRINTER == 1
+  Adafruit_Thermal(UARTDevice *s);
+#else
   Adafruit_Thermal(Stream *s = &Serial, uint8_t dtr = 255);
+#endif
 
   size_t
     /*!
@@ -337,7 +347,11 @@ public:
     hasPaper();
 
 private:
+#if ESPHOME_PRINTER == 1
+  UARTDevice *stream;
+#else
   Stream *stream;
+#endif
   uint8_t printMode,
       prevByte,      // Last character issued to printer
       column,        // Last horizontal column printed

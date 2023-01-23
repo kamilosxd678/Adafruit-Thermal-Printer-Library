@@ -67,10 +67,17 @@
 #define BYTE_TIME (((11L * 1000000L) + (BAUDRATE / 2)) / BAUDRATE)
 
 // Constructor
+#if ESPHOME_PRINTER == 1
+Adafruit_Thermal::Adafruit_Thermal(UARTDevice *s, uint8_t dtr)
+    : stream(s), dtrPin(255) {
+  dtrEnabled = false;
+}
+#else
 Adafruit_Thermal::Adafruit_Thermal(Stream *s, uint8_t dtr)
     : stream(s), dtrPin(dtr) {
   dtrEnabled = false;
 }
+#endif
 
 // This method sets the estimated completion time for a just-issued task.
 void Adafruit_Thermal::timeoutSet(unsigned long x) {
