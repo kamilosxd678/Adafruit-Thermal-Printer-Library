@@ -68,7 +68,7 @@
 
 // Constructor
 #if ESPHOME_PRINTER == 1
-Adafruit_Thermal::Adafruit_Thermal(UARTDevice *s, uint8_t dtr)
+Adafruit_Thermal::Adafruit_Thermal(esphome::uart::UARTDevice *s, uint8_t dtr)
     : stream(s), dtrPin(255) {
   dtrEnabled = false;
 }

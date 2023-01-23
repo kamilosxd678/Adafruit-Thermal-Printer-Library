@@ -107,7 +107,7 @@ public:
    * @param dtr Data Terminal Ready control
    */
 #if ESPHOME_PRINTER == 1
-  Adafruit_Thermal(UARTDevice *s);
+  Adafruit_Thermal(esphome::uart::UARTDevice *s);
 #else
   Adafruit_Thermal(Stream *s = &Serial, uint8_t dtr = 255);
 #endif
@@ -348,7 +348,7 @@ public:
 
 private:
 #if ESPHOME_PRINTER == 1
-  UARTDevice *stream;
+  esphome::uart::UARTDevice *stream;
 #else
   Stream *stream;
 #endif
