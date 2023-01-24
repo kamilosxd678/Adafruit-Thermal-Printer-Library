@@ -310,7 +310,7 @@ public:
      * @param bitmap Bitmap data, from a file.
      * @param fromProgMem
      */
-    void printBitmap(int w, int h, const uint8_t *bitmap, bool fromProgMem=true), {
+    void printBitmap(int w, int h, const uint8_t *bitmap, bool fromProgMem=true) {
       int rowBytes, rowBytesClipped, rowStart, chunkHeight, chunkHeightLimit, x, y,
           i;
 
@@ -673,7 +673,6 @@ public:
      * @brief Enables underline
      * @param weight Weight of the line
      */
-    underlineOn(uint8_t weight=1),
     void underlineOn(uint8_t weight=1) {
       if (weight > 2)
         weight = 2;
