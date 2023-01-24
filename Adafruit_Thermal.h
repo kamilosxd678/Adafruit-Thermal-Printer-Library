@@ -1,17 +1,6 @@
-/*!
- * @file Adafruit_Thermal.h
- */
-
-#ifndef ADAFRUIT_THERMAL_H
-#define ADAFRUIT_THERMAL_H
+#pragma once
 
 #include "Arduino.h"
-
-#define ESPHOME_PRINTER 1
-
-#if ESPHOME_PRINTER == 1
-//#include "esphome.h"
-#endif
 
 // Internal character sets used with ESC R n
 #define CHARSET_USA 0           //!< American character set
@@ -93,9 +82,33 @@ enum barcodes {
   CODE128, /**< CODE128 barcode system. 2<=num<=255 */
 };
 
+// ASCII codes used by some of the printer config commands:
+#define ASCII_TAB '\t' //!< Horizontal tab
+#define ASCII_LF '\n'  //!< Line feed
+#define ASCII_FF '\f'  //!< Form feed
+#define ASCII_CR '\r'  //!< Carriage return
+#define ASCII_DC2 18   //!< Device control 2
+#define ASCII_ESC 27   //!< Escape
+#define ASCII_FS 28    //!< Field separator
+#define ASCII_GS 29    //!< Group separator
+
+#define BYTE_TIME (((11L * 1000000L) + (9600 / 2)) / 9600)
+
+// === Character commands ===
+#define FONT_MASK (1 << 0) //!< Select character font A or B
+#define INVERSE_MASK                                                           \
+  (1 << 1) //!< Turn on/off white/black reverse printing mode. Not in 2.6.8
+           //!< firmware (see inverseOn())
+#define UPDOWN_MASK (1 << 2)        //!< Turn on/off upside-down printing mode
+#define BOLD_MASK (1 << 3)          //!< Turn on/off bold printing mode
+#define DOUBLE_HEIGHT_MASK (1 << 4) //!< Turn on/off double-height printing mode
+#define DOUBLE_WIDTH_MASK (1 << 5)  //!< Turn on/off double-width printing mode
+#define STRIKE_MASK (1 << 6)        //!< Turn on/off deleteline mode
+
 /*!
  * Driver for the thermal printer
  */
+template <class S>
 class Adafruit_Thermal : public Print {
 
 public:
@@ -106,89 +119,190 @@ public:
    * @param s Serial stream
    * @param dtr Data Terminal Ready control
    */
-#if ESPHOME_PRINTER == 1
-  Adafruit_Thermal(esphome::uart::UARTDevice *s);
-#else
-  Adafruit_Thermal(Stream *s = &Serial, uint8_t dtr = 255);
-#endif
+  Adafruit_Thermal(S *s) : stream(s), dtrPin(255) {
+    dtrEnabled = false;
+  }
 
-  size_t
-    /*!
-     * @brief Writes a character to the thermal printer
-     * @param c Character to write
-     * @return Returns true if successful
-     */
-    write(uint8_t c);
-  void
-    /*!
-     * @param version firmware version as integer, e.g. 268 = 2.68 firmware
-     */
-    begin(uint16_t version=268),
+  size_t write(uint8_t c) {
+    if (c != 13) { // Strip carriage returns
+      timeoutWait();
+      stream->write(c);
+      unsigned long d = BYTE_TIME;
+      if ((c == '\n') || (column == maxColumn)) { // If newline or wrap
+        d += (prevByte == '\n') ? ((charHeight + lineSpacing) * dotFeedTime)
+                                : // Feed line
+                ((charHeight * dotPrintTime) +
+                  (lineSpacing * dotFeedTime)); // Text line
+        column = 0;
+        c = '\n'; // Treat wrap as newline on next pass
+      } else {
+        column++;
+      }
+      timeoutSet(d);
+      prevByte = c;
+    }
+
+    return 1;
+  }
+
+  void begin(uint16_t version=268) {
+    firmware = version;
+
+    // The printer can't start receiving data immediately upon power up --
+    // it needs a moment to cold boot and initialize.  Allow at least 1/2
+    // sec of uptime before printer can receive data.
+    timeoutSet(500000L);
+
+    wake();
+    reset();
+
+    setHeatConfig();
+
+    // Enable DTR pin if requested
+    if (dtrPin < 255) {
+      pinMode(dtrPin, INPUT_PULLUP);
+      writeBytes(ASCII_GS, 'a', (1 << 5));
+      dtrEnabled = true;
+    }
+
+    dotPrintTime = 30000; // See comments near top of file for
+    dotFeedTime = 2100;   // an explanation of these values.
+    maxChunkHeight = 255;
+  }
     /*!
      * @brief Disables bold text
      */
-    boldOff(),
+    void boldOff() { unsetPrintMode(BOLD_MASK); }
     /*!
      * @brief Enables bold text
      */
-    boldOn(),
+    void boldOn() { setPrintMode(BOLD_MASK); }
     /*!
      * @brief Disables double-height text
      */
-    doubleHeightOff(),
+    void doubleHeightOff() { unsetPrintMode(DOUBLE_HEIGHT_MASK); }
     /*!
      * @brief Enables double-height text
      */
-    doubleHeightOn(),
+    void doubleHeightOn() { setPrintMode(DOUBLE_HEIGHT_MASK); }
     /*!
      * @brief Disables double-width text
      */
-    doubleWidthOff(),
+    void doubleWidthOff() { unsetPrintMode(DOUBLE_WIDTH_MASK); }
     /*!
      * @brief Enables double-width text
      */
-    doubleWidthOn(),
+    void doubleWidthOn() { setPrintMode(DOUBLE_WIDTH_MASK); }
     /*!
      * @brief Feeds by the specified number of lines 
      * @param x How many lines to feed 
      */
-    feed(uint8_t x=1),
+    void feed(uint8_t x=1) {
+      if (firmware >= 264) {
+        writeBytes(ASCII_ESC, 'd', x);
+        timeoutSet(dotFeedTime * charHeight);
+        prevByte = '\n';
+        column = 0;
+      } else {
+        while (x--)
+          write('\n'); // Feed manually; old firmware feeds excess lines
+      }
+    }
     /*!
      * @brief Feeds by the specified number of individual pixel rows 
      * @param rows How many rows to feed
      */
-    feedRows(uint8_t),
+    void feedRows(uint8_t rows) {
+      writeBytes(ASCII_ESC, 'J', rows);
+      timeoutSet(rows * dotFeedTime);
+      prevByte = '\n';
+      column = 0;
+    }
     /*!
      * @brief Flush data pending in the printer 
      */
-    flush(),
+    void flush() { writeBytes(ASCII_FF); }
     /*!
      * @brief Disables white/black reverse printing mode
      */
-    inverseOff(),
+    void inverseOff() {
+      if (firmware >= 268) {
+        writeBytes(ASCII_GS, 'B', 0);
+      } else {
+        unsetPrintMode(INVERSE_MASK);
+      }
+    }
+
     /*!
      * @brief Enables white/black reverse printing mode
      */
-    inverseOn(),
+    void inverseOn() {
+      if (firmware >= 268) {
+        writeBytes(ASCII_GS, 'B', 1);
+      } else {
+        setPrintMode(INVERSE_MASK);
+      }
+    }
+
     /*!
      * @brief Set the justification of text
      * @param value justification, must be JUSTIFY_LEFT, JUSTIFY_CENTER, JUSTIFY_RIGHT
      */
-    justify(char value),
+    void justify(char value) {
+      uint8_t pos = 0;
+
+      switch (toupper(value)) {
+      case 'L':
+        pos = 0;
+        break;
+      case 'C':
+        pos = 1;
+        break;
+      case 'R':
+        pos = 2;
+        break;
+      }
+
+      writeBytes(ASCII_ESC, 'a', pos);
+    }
     /*!
      * @brief Put the printer into an offline state. No other commands can be sent until an online call is made
      */
-    offline(),
+    void offline() { writeBytes(ASCII_ESC, '=', 0); }
+
     /*!
      * @brief Put the printer into an online state after previously put offline
      */
-    online(),
+    void online() { writeBytes(ASCII_ESC, '=', 1); }
+
     /*!
      * @brief Print a barcode
      * @param text The specified text/number (the meaning varies based on the type of barcode) and type to write to the barcode
      * @param type Value from the datasheet or class-level variables like UPC-A. Note the type value changes depending on the firmware version so use class-level values where possible
      */
-    printBarcode(const char *text, uint8_t type),
+    void printBarcode(const char *text, uint8_t type) {
+      feed(1); // Recent firmware can't print barcode w/o feed first???
+      if (firmware >= 264)
+        type += 65;
+      writeBytes(ASCII_GS, 'H', 2);    // Print label below barcode
+      writeBytes(ASCII_GS, 'w', 3);    // Barcode width 3 (0.375/1.0mm thin/thick)
+      writeBytes(ASCII_GS, 'k', type); // Barcode type (listed in .h file)
+      if (firmware >= 264) {
+        int len = strlen(text);
+        if (len > 255)
+          len = 255;
+        writeBytes(len); // Write length byte
+        for (uint8_t i = 0; i < len; i++)
+          writeBytes(text[i]); // Write string sans NUL
+      } else {
+        uint8_t c, i = 0;
+        do { // Copy string + NUL terminator
+          writeBytes(c = text[i++]);
+        } while (c);
+      }
+      timeoutSet((barcodeHeight + 40) * dotPrintTime);
+      prevByte = '\n';
+    }
     /*!
      * @brief Prints a bitmap
      * @param w Width of the image in pixels
@@ -196,162 +310,441 @@ public:
      * @param bitmap Bitmap data, from a file.
      * @param fromProgMem
      */
-    printBitmap(int w, int h, const uint8_t *bitmap, bool fromProgMem=true),
+    void printBitmap(int w, int h, const uint8_t *bitmap, bool fromProgMem=true), {
+      int rowBytes, rowBytesClipped, rowStart, chunkHeight, chunkHeightLimit, x, y,
+          i;
+
+      rowBytes = (w + 7) / 8; // Round up to next byte boundary
+      rowBytesClipped = (rowBytes >= 48) ? 48 : rowBytes; // 384 pixels max width
+
+      // Est. max rows to write at once, assuming 256 byte printer buffer.
+      if (dtrEnabled) {
+        chunkHeightLimit = 255; // Buffer doesn't matter, handshake!
+      } else {
+        chunkHeightLimit = 256 / rowBytesClipped;
+        if (chunkHeightLimit > maxChunkHeight)
+          chunkHeightLimit = maxChunkHeight;
+        else if (chunkHeightLimit < 1)
+          chunkHeightLimit = 1;
+      }
+
+      for (i = rowStart = 0; rowStart < h; rowStart += chunkHeightLimit) {
+        // Issue up to chunkHeightLimit rows at a time:
+        chunkHeight = h - rowStart;
+        if (chunkHeight > chunkHeightLimit)
+          chunkHeight = chunkHeightLimit;
+
+        writeBytes(ASCII_DC2, '*', chunkHeight, rowBytesClipped);
+
+        for (y = 0; y < chunkHeight; y++) {
+          for (x = 0; x < rowBytesClipped; x++, i++) {
+            timeoutWait();
+            stream->write(fromProgMem ? pgm_read_byte(bitmap + i) : *(bitmap + i));
+          }
+          i += rowBytes - rowBytesClipped;
+        }
+        timeoutSet(chunkHeight * dotPrintTime);
+      }
+      prevByte = '\n';
+    }
+
     /*!
      * @brief Prints a bitmap
      * @param w Width of the image in pixels
      * @param h Height of the image in pixels
      * @param fromStream Stream to get bitmap data from
      */
-    printBitmap(int w, int h, Stream *fromStream),
+    void printBitmap(int w, int h, Stream *fromStream) {
+      int rowBytes, rowBytesClipped, rowStart, chunkHeight, chunkHeightLimit, x, y,
+          i, c;
+
+      rowBytes = (w + 7) / 8; // Round up to next byte boundary
+      rowBytesClipped = (rowBytes >= 48) ? 48 : rowBytes; // 384 pixels max width
+
+      // Est. max rows to write at once, assuming 256 byte printer buffer.
+      if (dtrEnabled) {
+        chunkHeightLimit = 255; // Buffer doesn't matter, handshake!
+      } else {
+        chunkHeightLimit = 256 / rowBytesClipped;
+        if (chunkHeightLimit > maxChunkHeight)
+          chunkHeightLimit = maxChunkHeight;
+        else if (chunkHeightLimit < 1)
+          chunkHeightLimit = 1;
+      }
+
+      for (rowStart = 0; rowStart < h; rowStart += chunkHeightLimit) {
+        // Issue up to chunkHeightLimit rows at a time:
+        chunkHeight = h - rowStart;
+        if (chunkHeight > chunkHeightLimit)
+          chunkHeight = chunkHeightLimit;
+
+        writeBytes(ASCII_DC2, '*', chunkHeight, rowBytesClipped);
+
+        for (y = 0; y < chunkHeight; y++) {
+          for (x = 0; x < rowBytesClipped; x++) {
+            while ((c = fromStream->read()) < 0)
+              ;
+            timeoutWait();
+            stream->write((uint8_t)c);
+          }
+          for (i = rowBytes - rowBytesClipped; i > 0; i--) {
+            while ((c = fromStream->read()) < 0)
+              ;
+          }
+        }
+        timeoutSet(chunkHeight * dotPrintTime);
+      }
+      prevByte = '\n';
+    }
+
     /*!
      * @brief Prints a bitmap
      * @param fromStream Stream to get bitmap data from
      */
-    printBitmap(Stream *fromStream),
+    void printBitmap(Stream *fromStream) {
+      uint8_t tmp;
+      uint16_t width, height;
+
+      tmp = fromStream->read();
+      width = (fromStream->read() << 8) + tmp;
+
+      tmp = fromStream->read();
+      height = (fromStream->read() << 8) + tmp;
+
+      printBitmap(width, height, fromStream);
+    }
+
     /*!
      * @brief Sets text to normal mode
      */ 
-    normal(),
+    void normal() {
+      printMode = 0;
+      writePrintMode();
+    }
+
     /*!
      * @brief Reset the printer
      */
-    reset(),
+    void reset() {
+      writeBytes(ASCII_ESC, '@'); // Init command
+      prevByte = '\n';            // Treat as if prior line is blank
+      column = 0;
+      maxColumn = 32;
+      charHeight = 24;
+      lineSpacing = 6;
+      barcodeHeight = 50;
+
+      if (firmware >= 264) {
+        // Configure tab stops on recent printers
+        writeBytes(ASCII_ESC, 'D'); // Set tab stops...
+        writeBytes(4, 8, 12, 16);   // ...every 4 columns,
+        writeBytes(20, 24, 28, 0);  // 0 marks end-of-list.
+      }
+    }
     /*!
      * @brief Sets the barcode height
      * @param val Desired height of the barcode
      */
-    setBarcodeHeight(uint8_t val=50),
+    void setBarcodeHeight(uint8_t val=50) { // Default is 50
+      if (val < 1)
+        val = 1;
+      barcodeHeight = val;
+      writeBytes(ASCII_GS, 'h', val);
+    }
     /*!
      * @brief Sets the font
      * @param font Desired font, either A or B
      */
-    setFont(char font='A'),
+    void setFont(char font='A') {
+      switch (toupper(font)) {
+      case 'B':
+        setPrintMode(FONT_MASK);
+        break;
+      case 'A':
+      default:
+        unsetPrintMode(FONT_MASK);
+      }
+    }
     /*!
      * @brief Sets the character spacing
      * @param spacing Desired character spacing
      */
-    setCharSpacing(int spacing=0), // Only works w/recent firmware
+    void setCharSpacing(int spacing=0) {
+      writeBytes(ASCII_ESC, ' ', spacing);
+    }
     /*!
      * @brief Sets the character set
      * @param val Value of the desired character set
      */
-    setCharset(uint8_t val=0),
+    void setCharset(uint8_t val=0) {
+      if (val > 15)
+        val = 15;
+      writeBytes(ASCII_ESC, 'R', val);
+    }
     /*!
      * @brief Sets character code page
      * @param val Value of the desired character code page
      */
-    setCodePage(uint8_t val=0),
+    void setCodePage(uint8_t val=0) {
+      if (val > 47)
+        val = 47;
+      writeBytes(ASCII_ESC, 't', val);
+    }
     /*!
      * @brief Sets the default settings
      */
-    setDefault(),
+    void setDefault() {
+      online();
+      justify('L');
+      inverseOff();
+      doubleHeightOff();
+      setLineHeight(30);
+      boldOff();
+      underlineOff();
+      setBarcodeHeight(50);
+      setSize('s');
+      setCharset();
+      setCodePage();
+    }
     /*!
      * @brief Sets the line height
      * @param val Desired line height
      */
-    setLineHeight(int val=30),
+    void setLineHeight(int val=30) {
+      if (val < 24)
+        val = 24;
+      lineSpacing = val - 24;
+
+      // The printer doesn't take into account the current text height
+      // when setting line height, making this more akin to inter-line
+      // spacing.  Default line spacing is 30 (char height of 24, line
+      // spacing of 6).
+      writeBytes(ASCII_ESC, '3', val);
+    }
+
     /*!
      * @brief Set max rows to write
      * @param val Max rows to write
      */
-    setMaxChunkHeight(int val=256),
+    void setMaxChunkHeight(int val=256) { maxChunkHeight = val; }
     /*!
      * @brief Sets text size
      * @param value Text size
      */
-    setSize(char value),
+    void setSize(char value) {
+      uint8_t size;
+
+      switch (toupper(value)) {
+      default: // Small: standard width and height
+        // size = 0x00;
+        // charHeight = 24;
+        // maxColumn = 32;
+        doubleWidthOff();
+        doubleHeightOff();
+        break;
+      case 'M': // Medium: double height
+        // size = 0x01;
+        // charHeight = 48;
+        // maxColumn = 32;
+        doubleHeightOn();
+        doubleWidthOff();
+        break;
+      case 'L': // Large: double width and height
+        // size = 0x11;
+        // charHeight = 48;
+        // maxColumn = 16;
+        doubleHeightOn();
+        doubleWidthOn();
+        break;
+      }
+
+      // writeBytes(ASCII_GS, '!', size);
+      // prevByte = '\n'; // Setting the size adds a linefeed
+    }
     /*!
      * @brief Sets print and feed speed
      * @param p print speed
      * @param f feed speed
      */
-    setTimes(unsigned long, unsigned long),
+    void setTimes(unsigned long p, unsigned long f) {
+      dotPrintTime = p;
+      dotFeedTime = f;
+    }
+
     /*!
      * @brief Sets print head heating configuration
      * @param dots max printing dots, 8 dots per increment
      * @param time heating time, 10us per increment
      * @param interval heating interval, 10 us per increment
      */
-    setHeatConfig(uint8_t dots=11, uint8_t time=120, uint8_t interval=40),
+    void setHeatConfig(uint8_t dots=11, uint8_t time=120, uint8_t interval=40) {
+      writeBytes(ASCII_ESC, '7');       // Esc 7 (print settings)
+      writeBytes(dots, time, interval); // Heating dots, heat time, heat interval
+    }
     /*!
      * @brief Sets print density
      * @param density printing density
      * @param breakTime printing break time
      */
-    setPrintDensity(uint8_t density=10, uint8_t breakTime=2),
+    void setPrintDensity(uint8_t density=10, uint8_t breakTime=2) {
+      writeBytes(ASCII_DC2, '#', (density << 5) | breakTime);
+    }
     /*!
      * @brief Puts the printer into a low-energy state immediately
      */
-    sleep(),
+    void sleep() {
+      sleepAfter(1); // Can't be 0, that means 'don't sleep'
+    }
+
     /*!
      * @brief Puts the printer into a low-energe state after the given number of seconds
      * @param seconds How many seconds to wait until sleeping
      */
-    sleepAfter(uint16_t seconds),
+    void sleepAfter(uint16_t seconds) {
+      if (firmware >= 264) {
+        writeBytes(ASCII_ESC, '8', seconds, seconds >> 8);
+      } else {
+        writeBytes(ASCII_ESC, '8', seconds);
+      }
+    }
+
     /*!
      * @brief Disables delete line mode
      */ 
-    strikeOff(),
+    void strikeOff() { unsetPrintMode(STRIKE_MASK); }
     /*!
      * @brief Enables delete line mode
      */
-    strikeOn(),
+    void strikeOn() { setPrintMode(STRIKE_MASK); }
     /*!
      * @brief Sends tab to device
      */
-    tab(),                         // Only works w/recent firmware
+    void tab() {
+      writeBytes(ASCII_TAB);
+      column = (column + 4) & 0b11111100;
+    }
     /*!
      * @brief Prints test text
      */
-    test(),
+    void test() {
+      println(F("Hello World!"));
+      feed(2);
+    }
+
     /*!
      * @brief Prints test page
      */
-    testPage(),
+    void testPage() {
+      writeBytes(ASCII_DC2, 'T');
+      timeoutSet(dotPrintTime * 24 * 26 + // 26 lines w/text (ea. 24 dots high)
+                dotFeedTime *
+                    (6 * 26 + 30)); // 26 text lines (feed 6 dots) + blank line
+    }
+
     /*!
      * @brief Sets the estimated completion time for a just-issued task
      * @param x Estimated completion time
      */
-    timeoutSet(unsigned long),
+    void timeoutSet(unsigned long x) {
+      if (!dtrEnabled)
+        resumeTime = micros() + x;
+    }
+
     /*!
      * @brief Waits for the prior task to complete 
      */
-    timeoutWait(),
+    void timeoutWait() {
+      if (dtrEnabled) {
+        while (digitalRead(dtrPin) == HIGH) {
+          yield();
+        };
+      } else {
+        while ((long)(micros() - resumeTime) < 0L) {
+          yield();
+        }; // (syntax is rollover-proof)
+      }
+    }
+
     /*!
      * @brief Disables underline
      */
-    underlineOff(),
+    void underlineOff() { writeBytes(ASCII_ESC, '-', 0); }
     /*!
      * @brief Enables underline
      * @param weight Weight of the line
      */
     underlineOn(uint8_t weight=1),
+    void underlineOn(uint8_t weight=1) {
+      if (weight > 2)
+        weight = 2;
+      writeBytes(ASCII_ESC, '-', weight);
+    }
     /*!
      * @brief Disables upside-down text mode
      */
-    upsideDownOff(),
+    void upsideDownOff() {
+      if (firmware >= 268) {
+        writeBytes(ASCII_ESC, '{', 0);
+      } else {
+        unsetPrintMode(UPDOWN_MASK);
+      }
+    }
+
     /*!
      * @brief Enables upside-down text mode
      */
-    upsideDownOn(),
+    void upsideDownOn() {
+      if (firmware >= 268) {
+        writeBytes(ASCII_ESC, '{', 1);
+      } else {
+        setPrintMode(UPDOWN_MASK);
+      }
+    }
+
     /*!
      * @brief Wakes device that was in sleep mode
      */
-    wake();
-  bool
-    /*!
-     * @brief Whether or not the printer has paper
-     * @return Returns true if there is still paper
-     */
-    hasPaper();
+    void wake() {
+      timeoutSet(0);   // Reset timeout counter
+      writeBytes(255); // Wake
+      if (firmware >= 264) {
+        delay(50);
+        writeBytes(ASCII_ESC, '8', 0, 0); // Sleep off (important!)
+      } else {
+        // Datasheet recommends a 50 mS delay before issuing further commands,
+        // but in practice this alone isn't sufficient (e.g. text size/style
+        // commands may still be misinterpreted on wake).  A slightly longer
+        // delay, interspersed with NUL chars (no-ops) seems to help.
+        for (uint8_t i = 0; i < 10; i++) {
+          writeBytes(0);
+          timeoutSet(10000L);
+        }
+      }
+    }
+
+    bool hasPaper() {
+      if (firmware >= 264) {
+        writeBytes(ASCII_ESC, 'v', 0);
+      } else {
+        writeBytes(ASCII_GS, 'r', 0);
+      }
+
+      int status = -1;
+      for (uint8_t i = 0; i < 10; i++) {
+        if (stream->available()) {
+          status = stream->read();
+          break;
+        }
+        delay(100);
+      }
+
+      return !(status & 0b00000100);
+    }
+
 
 private:
-#if ESPHOME_PRINTER == 1
-  esphome::uart::UARTDevice *stream;
-#else
-  Stream *stream;
-#endif
+  S *stream;
+
   uint8_t printMode,
       prevByte,      // Last character issued to printer
       column,        // Last horizontal column printed
@@ -367,11 +760,77 @@ private:
       resumeTime,   // Wait until micros() exceeds this before sending byte
       dotPrintTime, // Time to print a single dot line, in microseconds
       dotFeedTime;  // Time to feed a single dot line, in microseconds
-  void writeBytes(uint8_t a), writeBytes(uint8_t a, uint8_t b),
-      writeBytes(uint8_t a, uint8_t b, uint8_t c),
-      writeBytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d),
-      setPrintMode(uint8_t mask), unsetPrintMode(uint8_t mask),
-      writePrintMode(), adjustCharValues(uint8_t printMode);
-};
+  
+  void writeBytes(uint8_t a) {
+    timeoutWait();
+    stream->write(a);
+    timeoutSet(BYTE_TIME);
+  }
 
-#endif // ADAFRUIT_THERMAL_H
+  void writeBytes(uint8_t a, uint8_t b) {
+    timeoutWait();
+    stream->write(a);
+    stream->write(b);
+    timeoutSet(2 * BYTE_TIME);
+  }
+
+  void writeBytes(uint8_t a, uint8_t b, uint8_t c) {
+    timeoutWait();
+    stream->write(a);
+    stream->write(b);
+    stream->write(c);
+    timeoutSet(3 * BYTE_TIME);
+  }
+
+  void writeBytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    timeoutWait();
+    stream->write(a);
+    stream->write(b);
+    stream->write(c);
+    stream->write(d);
+    timeoutSet(4 * BYTE_TIME);
+  }
+
+  void setPrintMode(uint8_t mask) {
+    printMode |= mask;
+    writePrintMode();
+    adjustCharValues(printMode);
+    // charHeight = (printMode & DOUBLE_HEIGHT_MASK) ? 48 : 24;
+    // maxColumn = (printMode & DOUBLE_WIDTH_MASK) ? 16 : 32;
+  }
+
+  void unsetPrintMode(uint8_t mask) {
+    printMode &= ~mask;
+    writePrintMode();
+    adjustCharValues(printMode);
+    // charHeight = (printMode & DOUBLE_HEIGHT_MASK) ? 48 : 24;
+    // maxColumn = (printMode & DOUBLE_WIDTH_MASK) ? 16 : 32;
+  }
+
+  void writePrintMode() {
+    writeBytes(ASCII_ESC, '!', printMode);
+  }
+
+  void adjustCharValues(uint8_t printMode) {
+    uint8_t charWidth;
+    if (printMode & FONT_MASK) {
+      // FontB
+      charHeight = 17;
+      charWidth = 9;
+    } else {
+      // FontA
+      charHeight = 24;
+      charWidth = 12;
+    }
+    // Double Width Mode
+    if (printMode & DOUBLE_WIDTH_MASK) {
+      maxColumn /= 2;
+      charWidth *= 2;
+    }
+    // Double Height Mode
+    if (printMode & DOUBLE_HEIGHT_MASK) {
+      charHeight *= 2;
+    }
+    maxColumn = (384 / charWidth);
+  }
+};
