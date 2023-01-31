@@ -119,8 +119,8 @@ public:
    * @param s Serial stream
    * @param dtr Data Terminal Ready control
    */
-  Adafruit_Thermal(S *s) : stream(s), dtrPin(255) {
-    dtrEnabled = false;
+  Adafruit_Thermal(S *s, int dtr=255) : stream(s), dtrPin(dtr) {
+    dtrEnabled = (dtr != 255);
   }
 
   size_t write(uint8_t c) {
